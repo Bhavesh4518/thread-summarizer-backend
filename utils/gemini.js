@@ -3,8 +3,9 @@ const { GoogleGenerativeAI } = require("@google/generative-ai");
 class GeminiService {
   constructor() {
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    // Use the correct model name
     this.model = this.genAI.getGenerativeModel({ 
-      model: process.env.GEMINI_MODEL || "gemini-pro" 
+      model: process.env.GEMINI_MODEL || "gemini-1.5-flash" 
     });
   }
 
