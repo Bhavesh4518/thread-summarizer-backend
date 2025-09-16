@@ -1,57 +1,73 @@
 const express = require('express');
-const geminiService = require('../utils/gemini'); // Changed from openai
+const NodeCache = require('node-cache');
+const geminiService = require('../utils/gemini');
 const router = express.Router();
 
-// Rate limiting middleware (simple version)
-const rateLimit = {};
-const RATE_LIMIT_COUNT = 100; // 10 requests per hour
-const RATE_LIMIT_WINDOW = 60 * 60 * 1000; // 1 hour
+// Cache setup
+const cache = new NodeCache({ stdTTL: 1800 }); // 30 minutes
 
-router.use((req, res, next) => {
-  const clientId = req.headers['x-client-id'] || 'anonymous';
-  const now = Date.now();
-  
-  if (!rateLimit[clientId]) {
-    rateLimit[clientId] = { count: 0, resetTime: now + RATE_LIMIT_WINDOW };
-  }
-  
-  if (now > rateLimit[clientId].resetTime) {
-    rateLimit[clientId] = { count: 0, resetTime: now + RATE_LIMIT_WINDOW };
-  }
-  
-  if (rateLimit[clientId].count >= RATE_LIMIT_COUNT) {
-    return res.status(429).json({ 
-      error: 'Rate limit exceeded. Please try again later.' 
-    });
-  }
-  
-  rateLimit[clientId].count++;
-  next();
+// Enhanced rate limiting
+const { RateLimiterMemory } = require('rate-limiter-flexible');
+
+const summaryRateLimiter = new RateLimiterMemory({
+  points: 10, // 10 requests
+  duration: 60, // per minute
 });
 
-// Summarize thread endpoint
-router.post('/summarize', async (req, res) => {
-  console.log('📥 Received summarize request');
-  console.log('📄 Content length:', req.body.threadContent?.text?.length || 0);
+const replyRateLimiter = new RateLimiterMemory({
+  points: 5, // 5 requests
+  duration: 60, // per minute
+});
+
+// Cache middleware
+function cacheMiddleware(req, res, next) {
+  const cacheKey = req.originalUrl + JSON.stringify(req.body);
+  const cachedResponse = cache.get(cacheKey);
   
+  if (cachedResponse) {
+    return res.json({ ...cachedResponse, fromCache: true });
+  }
+  
+  // Override res.json to cache the response
+  const originalJson = res.json;
+  res.json = function(body) {
+    cache.set(cacheKey, body);
+    return originalJson.call(this, { ...body, fromCache: false });
+  };
+  
+  next();
+}
+
+// Rate limiting middleware
+const rateLimitMiddleware = (rateLimiter) => async (req, res, next) => {
+  try {
+    const clientId = req.ip || req.headers['x-forwarded-for'] || 'anonymous';
+    await rateLimiter.consume(clientId);
+    next();
+  } catch (rejRes) {
+    res.status(429).json({ 
+      error: 'Rate limit exceeded',
+      message: 'Too many requests. Please try again in a minute.',
+      retryAfter: 60
+    });
+  }
+};
+
+// Summarize thread endpoint
+router.post('/summarize', cacheMiddleware, rateLimitMiddleware(summaryRateLimiter), async (req, res) => {
   try {
     const { threadContent } = req.body;
     
     if (!threadContent || !threadContent.text) {
-      console.log('❌ Missing thread content');
       return res.status(400).json({ 
         error: 'Bad Request',
         message: 'Thread content is required' 
       });
     }
     
-    console.log('🤖 Calling Gemini API...');
     const summary = await geminiService.summarizeThread(threadContent);
-    console.log('✅ Gemini summary generated');
-    
     res.json({ success: true, summary });
   } catch (error) {
-    console.error('💥 Summarization error:', error);
     res.status(500).json({ 
       error: 'Internal Server Error',
       message: error.message || 'Failed to summarize thread' 
@@ -60,33 +76,18 @@ router.post('/summarize', async (req, res) => {
 });
 
 // Generate reply endpoint
-router.post('/reply', async (req, res) => {
-  console.log('📥 Received reply request');
-  console.log('📄 Request body:', JSON.stringify(req.body, null, 2)); // Add this for debugging
-  
+router.post('/reply', cacheMiddleware, rateLimitMiddleware(replyRateLimiter), async (req, res) => {
   try {
     const { threadContent, summary } = req.body;
     
-    // Better validation
-    if (!threadContent) {
-      console.log('❌ Missing threadContent');
+    if (!threadContent || !summary) {
       return res.status(400).json({ 
         error: 'Bad Request',
-        message: 'Thread content is required' 
+        message: 'Thread content and summary are required' 
       });
     }
     
-    if (!summary) {
-      console.log('❌ Missing summary');
-      return res.status(400).json({ 
-        error: 'Bad Request',
-        message: 'Summary is required' 
-      });
-    }
-    
-    // Additional validation
     if (!threadContent.text) {
-      console.log('❌ Missing threadContent.text');
       return res.status(400).json({ 
         error: 'Bad Request',
         message: 'Thread content text is required' 
@@ -94,25 +95,26 @@ router.post('/reply', async (req, res) => {
     }
     
     if (!Array.isArray(summary.keyPoints)) {
-      console.log('❌ Invalid summary structure');
       return res.status(400).json({ 
         error: 'Bad Request',
         message: 'Summary must include keyPoints array' 
       });
     }
     
-    console.log('🤖 Calling Gemini API for reply...');
     const reply = await geminiService.generateReply(threadContent, summary);
-    console.log('✅ Gemini reply generated');
-    
     res.json({ success: true, reply });
   } catch (error) {
-    console.error('💥 Reply generation error:', error);
     res.status(500).json({ 
       error: 'Internal Server Error',
       message: error.message || 'Failed to generate reply' 
     });
   }
+});
+
+// Cache management endpoint (for testing)
+router.post('/clear-cache', (req, res) => {
+  cache.flushAll();
+  res.json({ success: true, message: 'Cache cleared' });
 });
 
 module.exports = router;
