@@ -4,7 +4,7 @@ const router = express.Router();
 
 // Rate limiting middleware (simple version)
 const rateLimit = {};
-const RATE_LIMIT_COUNT = 10; // 10 requests per hour
+const RATE_LIMIT_COUNT = 100; // 10 requests per hour
 const RATE_LIMIT_WINDOW = 60 * 60 * 1000; // 1 hour
 
 router.use((req, res, next) => {
