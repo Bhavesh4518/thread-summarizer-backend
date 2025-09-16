@@ -31,27 +31,27 @@ router.use((req, res, next) => {
 
 // Summarize thread endpoint
 router.post('/summarize', async (req, res) => {
+  console.log('📥 Received summarize request');
+  console.log('📄 Content length:', req.body.threadContent?.text?.length || 0);
+  
   try {
     const { threadContent } = req.body;
     
     if (!threadContent || !threadContent.text) {
+      console.log('❌ Missing thread content');
       return res.status(400).json({ 
         error: 'Bad Request',
         message: 'Thread content is required' 
       });
     }
     
-    if (threadContent.text.length > 10000) {
-      return res.status(400).json({
-        error: 'Bad Request',
-        message: 'Thread content too long. Please provide shorter content.'
-      });
-    }
+    console.log('🤖 Calling Gemini API...');
+    const summary = await geminiService.summarizeThread(threadContent);
+    console.log('✅ Gemini summary generated');
     
-    const summary = await geminiService.summarizeThread(threadContent); // Changed
     res.json({ success: true, summary });
   } catch (error) {
-    console.error('Summarization error:', error);
+    console.error('💥 Summarization error:', error);
     res.status(500).json({ 
       error: 'Internal Server Error',
       message: error.message || 'Failed to summarize thread' 
@@ -61,20 +61,26 @@ router.post('/summarize', async (req, res) => {
 
 // Generate reply endpoint
 router.post('/reply', async (req, res) => {
+  console.log('📥 Received reply request');
+  
   try {
     const { threadContent, summary } = req.body;
     
     if (!threadContent || !summary) {
+      console.log('❌ Missing content or summary');
       return res.status(400).json({ 
         error: 'Bad Request',
         message: 'Thread content and summary are required' 
       });
     }
     
-    const reply = await geminiService.generateReply(threadContent, summary); // Changed
+    console.log('🤖 Calling Gemini API for reply...');
+    const reply = await geminiService.generateReply(threadContent, summary);
+    console.log('✅ Gemini reply generated');
+    
     res.json({ success: true, reply });
   } catch (error) {
-    console.error('Reply generation error:', error);
+    console.error('💥 Reply generation error:', error);
     res.status(500).json({ 
       error: 'Internal Server Error',
       message: error.message || 'Failed to generate reply' 
