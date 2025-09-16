@@ -62,15 +62,42 @@ router.post('/summarize', async (req, res) => {
 // Generate reply endpoint
 router.post('/reply', async (req, res) => {
   console.log('📥 Received reply request');
+  console.log('📄 Request body:', JSON.stringify(req.body, null, 2)); // Add this for debugging
   
   try {
     const { threadContent, summary } = req.body;
     
-    if (!threadContent || !summary) {
-      console.log('❌ Missing content or summary');
+    // Better validation
+    if (!threadContent) {
+      console.log('❌ Missing threadContent');
       return res.status(400).json({ 
         error: 'Bad Request',
-        message: 'Thread content and summary are required' 
+        message: 'Thread content is required' 
+      });
+    }
+    
+    if (!summary) {
+      console.log('❌ Missing summary');
+      return res.status(400).json({ 
+        error: 'Bad Request',
+        message: 'Summary is required' 
+      });
+    }
+    
+    // Additional validation
+    if (!threadContent.text) {
+      console.log('❌ Missing threadContent.text');
+      return res.status(400).json({ 
+        error: 'Bad Request',
+        message: 'Thread content text is required' 
+      });
+    }
+    
+    if (!Array.isArray(summary.keyPoints)) {
+      console.log('❌ Invalid summary structure');
+      return res.status(400).json({ 
+        error: 'Bad Request',
+        message: 'Summary must include keyPoints array' 
       });
     }
     
