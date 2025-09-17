@@ -1,4 +1,5 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { HfInference } = require('@huggingface/inference');
 
 class GeminiService {
   constructor() {
@@ -6,10 +7,21 @@ class GeminiService {
     this.model = this.genAI.getGenerativeModel({ 
       model: process.env.GEMINI_MODEL || "gemini-1.5-flash" 
     });
+    
+    // Initialize Hugging Face service if API key is available
+    this.HF_TOKEN = process.env.HUGGINGFACE_API_KEY;
+    if (this.HF_TOKEN) {
+      this.hf = new HfInference(this.HF_TOKEN);
+      console.log('🚀 Hugging Face service initialized');
+    } else {
+      console.warn('⚠️ Hugging Face API key not found - fallback will not work');
+    }
   }
 
   async summarizeThread(threadContent) {
     try {
+      console.log('🚀 Calling Gemini API for summarization...');
+      
       const prompt = `You are a content summarization expert. Create a concise, actionable summary of this social media thread.
 
 Rules:
@@ -45,7 +57,18 @@ Thread content: ${threadContent.text.substring(0, 2500)}`;
       
       return parsedResponse;
     } catch (error) {
-      console.error('💥 Gemini summary error:', error);
+      console.error('💥 Gemini summary error:', error.message);
+      
+      // Check if it's a quota error and fallback to Hugging Face
+      if ((error.message.includes('429') || error.message.includes('quota')) && this.hf) {
+        console.log('🔄 Gemini quota exceeded, falling back to Hugging Face...');
+        try {
+          return await this.summarizeWithHuggingFace(threadContent);
+        } catch (hfError) {
+          console.error('💥 Hugging Face fallback also failed:', hfError.message);
+        }
+      }
+      
       // Return fallback structure
       return {
         keyPoints: ["Content summary will appear here"],
@@ -59,6 +82,8 @@ Thread content: ${threadContent.text.substring(0, 2500)}`;
 
   async generateReply(threadContent, summary) {
     try {
+      console.log('🚀 Calling Gemini API for reply generation...');
+      
       const prompt = `Generate a human-like response to this thread that:
 - Sounds natural and conversational
 - Adds value to the discussion
@@ -76,8 +101,99 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
       console.log('🤖 Gemini reply response:', response.substring(0, 50) + '...');
       return response;
     } catch (error) {
-      console.error('💥 Gemini reply error:', error);
+      console.error('💥 Gemini reply error:', error.message);
+      
+      // Check if it's a quota error and fallback to Hugging Face
+      if ((error.message.includes('429') || error.message.includes('quota')) && this.hf) {
+        console.log('🔄 Gemini quota exceeded, falling back to Hugging Face...');
+        try {
+          return await this.generateReplyWithHuggingFace(threadContent, summary);
+        } catch (hfError) {
+          console.error('💥 Hugging Face fallback also failed:', hfError.message);
+        }
+      }
+      
       return "Thanks for sharing these insights!";
+    }
+  }
+
+  // Hugging Face fallback methods
+  async summarizeWithHuggingFace(threadContent) {
+    try {
+      console.log('🚀 Calling Hugging Face for summarization...');
+      
+      if (!this.hf) {
+        throw new Error('Hugging Face service not initialized');
+      }
+      
+      // Prepare prompt for Hugging Face
+      const prompt = `Summarize this social media thread with exactly 3 key points and 2 notable quotes.
+      
+Thread content: ${threadContent.text.substring(0, 1000)}
+
+Format your response as:
+Key Points:
+1. [First key point]
+2. [Second key point]
+3. [Third key point]
+
+Quotes:
+Quote 1: [First notable quote]
+Quote 2: [Second notable quote]`;
+
+      // Use a text generation model
+      const response = await this.hf.textGeneration({
+        model: 'google/flan-t5-base', // Instruction-following model
+        inputs: prompt,
+        parameters: {
+          max_new_tokens: 200,
+          temperature: 0.7,
+          top_p: 0.9,
+          repetition_penalty: 1.2
+        }
+      });
+
+      console.log('✅ Hugging Face summary response:', response.generated_text.substring(0, 100) + '...');
+      
+      // Parse the response
+      return this.parseSummaryResponse(response.generated_text);
+    } catch (error) {
+      console.error('💥 Hugging Face summarization error:', error);
+      throw error;
+    }
+  }
+
+  async generateReplyWithHuggingFace(threadContent, summary) {
+    try {
+      console.log('🚀 Calling Hugging Face for reply generation...');
+      
+      if (!this.hf) {
+        throw new Error('Hugging Face service not initialized');
+      }
+      
+      const prompt = `Generate a human-like response to this social media thread:
+      
+Thread content: ${threadContent.text.substring(0, 500)}
+Summary key points: ${summary.keyPoints.slice(0, 2).join(', ')}
+
+Generate only a concise, natural response (1-2 sentences):`;
+
+      const response = await this.hf.textGeneration({
+        model: 'google/flan-t5-base',
+        inputs: prompt,
+        parameters: {
+          max_new_tokens: 100,
+          temperature: 0.8,
+          top_p: 0.9
+        }
+      });
+
+      console.log('✅ Hugging Face reply response:', response.generated_text.substring(0, 50) + '...');
+      
+      return response.generated_text.trim();
+    } catch (error) {
+      console.error('💥 Hugging Face reply error:', error);
+      throw error;
     }
   }
 
@@ -98,6 +214,10 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
         
         // If it's not a 503 error, don't retry
         if (!error.message.includes('503') && !error.message.includes('overloaded')) {
+          // Check for quota errors to trigger fallback immediately
+          if (error.message.includes('429') || error.message.includes('quota')) {
+            throw error;
+          }
           throw error;
         }
         
