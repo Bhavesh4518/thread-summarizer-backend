@@ -126,10 +126,22 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
         throw new Error('Hugging Face service not initialized');
       }
       
-      // Prepare prompt for Hugging Face
-      const prompt = `Summarize this social media thread with exactly 3 key points and 2 notable quotes.
+      // Try multiple models in order of preference
+      const modelsToTry = [
+        'facebook/bart-large-cnn', // Specifically for summarization
+        'sshleifer/distilbart-cnn-12-6', // Lightweight summarization
+        'google/flan-t5-small', // Smaller instruction model
+        'gpt2' // General text generation (last resort)
+      ];
       
-Thread content: ${threadContent.text.substring(0, 1000)}
+      for (const model of modelsToTry) {
+        try {
+          console.log(`🔍 Trying Hugging Face model: ${model}`);
+          
+          // Prepare prompt for Hugging Face
+          const prompt = `Summarize this social media thread with exactly 3 key points and 2 notable quotes.
+          
+Thread content: ${threadContent.text.substring(0, 800)}
 
 Format your response as:
 Key Points:
@@ -141,22 +153,32 @@ Quotes:
 Quote 1: [First notable quote]
 Quote 2: [Second notable quote]`;
 
-      // Use a text generation model
-      const response = await this.hf.textGeneration({
-        model: 'google/flan-t5-base', // Instruction-following model
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 200,
-          temperature: 0.7,
-          top_p: 0.9,
-          repetition_penalty: 1.2
-        }
-      });
+          // Use text generation with the current model
+          const response = await this.hf.textGeneration({
+            model: model,
+            inputs: prompt,
+            parameters: {
+              max_new_tokens: 200,
+              temperature: 0.7,
+              top_p: 0.9,
+              repetition_penalty: 1.2
+            }
+          });
 
-      console.log('✅ Hugging Face summary response:', response.generated_text.substring(0, 100) + '...');
+          console.log(`✅ Hugging Face summary response with ${model}:`, response.generated_text.substring(0, 100) + '...');
+          
+          // Parse the response
+          return this.parseSummaryResponse(response.generated_text);
+        } catch (modelError) {
+          console.warn(`⚠️ Model ${model} failed:`, modelError.message);
+          // Continue to next model
+          continue;
+        }
+      }
       
-      // Parse the response
-      return this.parseSummaryResponse(response.generated_text);
+      // If all models fail, throw an error
+      throw new Error('All Hugging Face models failed');
+      
     } catch (error) {
       console.error('💥 Hugging Face summarization error:', error);
       throw error;
@@ -171,26 +193,47 @@ Quote 2: [Second notable quote]`;
         throw new Error('Hugging Face service not initialized');
       }
       
-      const prompt = `Generate a human-like response to this social media thread:
+      // Try multiple models for reply generation
+      const modelsToTry = [
+        'microsoft/DialoGPT-medium', // Specifically for dialogue
+        'google/flan-t5-small', // Instruction-following model
+        'gpt2' // General text generation
+      ];
       
-Thread content: ${threadContent.text.substring(0, 500)}
+      for (const model of modelsToTry) {
+        try {
+          console.log(`🔍 Trying Hugging Face model for reply: ${model}`);
+          
+          const prompt = `Generate a human-like response to this social media thread:
+          
+Thread content: ${threadContent.text.substring(0, 400)}
 Summary key points: ${summary.keyPoints.slice(0, 2).join(', ')}
 
 Generate only a concise, natural response (1-2 sentences):`;
 
-      const response = await this.hf.textGeneration({
-        model: 'google/flan-t5-base',
-        inputs: prompt,
-        parameters: {
-          max_new_tokens: 100,
-          temperature: 0.8,
-          top_p: 0.9
-        }
-      });
+          const response = await this.hf.textGeneration({
+            model: model,
+            inputs: prompt,
+            parameters: {
+              max_new_tokens: 100,
+              temperature: 0.8,
+              top_p: 0.9
+            }
+          });
 
-      console.log('✅ Hugging Face reply response:', response.generated_text.substring(0, 50) + '...');
+          console.log(`✅ Hugging Face reply response with ${model}:`, response.generated_text.substring(0, 50) + '...');
+          
+          return response.generated_text.trim();
+        } catch (modelError) {
+          console.warn(`⚠️ Model ${model} failed for reply:`, modelError.message);
+          // Continue to next model
+          continue;
+        }
+      }
       
-      return response.generated_text.trim();
+      // If all models fail, throw an error
+      throw new Error('All Hugging Face models failed for reply generation');
+      
     } catch (error) {
       console.error('💥 Hugging Face reply error:', error);
       throw error;
@@ -256,93 +299,47 @@ Generate only a concise, natural response (1-2 sentences):`;
       // Detect sections
       if (lowerLine.includes('key points') || lowerLine.includes('main points')) {
         currentSection = 'points';
-        return;
-      }
-      
-      if (lowerLine.includes('quotes') || lowerLine.includes('notable quotes')) {
+      } else if (lowerLine.includes('quotes') || lowerLine.includes('notable quotes')) {
         currentSection = 'quotes';
-        return;
-      }
-      
-      // Parse key points (look for numbered points)
-      if (currentSection === 'points') {
-        const pointMatch = cleanLine.match(/^(\d+\.|\*|-)\s*(.+)$/);
-        if (pointMatch && pointMatch[2]) {
-          const point = pointMatch[2].trim();
-          if (point.length > 10 && keyPoints.length < 3) {
-            keyPoints.push(point.substring(0, 100));
+      } else if (lowerLine.includes('sentiment')) {
+        sentiment = lowerLine.includes('positive') ? 'positive' : 
+                   lowerLine.includes('negative') ? 'negative' : 'neutral';
+      } else if (lowerLine.includes('reading time')) {
+        const timeMatch = line.match(/(\d+)/);
+        if (timeMatch) timeToRead = parseInt(timeMatch[1]);
+      } else if (line.trim().startsWith('-') || line.trim().startsWith('*') || line.trim().match(/^\d+\./)) {
+        const cleanLine = line.replace(/^[-*\d.]+\s*/, '').trim();
+        if (currentSection === 'points' && cleanLine) {
+          if (keyPoints.length < 3) { // Limit to 3 key points
+            keyPoints.push(cleanLine.substring(0, 100));
           }
-        }
-        // Also catch lines that look like key points
-        else if (cleanLine.length > 20 && cleanLine.length < 150 && !cleanLine.includes('quote') && keyPoints.length < 3) {
-          keyPoints.push(cleanLine.substring(0, 100));
-        }
-      }
-      
-      // Parse quotes (look for "Quote 1:", "Quote 2:", etc.)
-      else if (currentSection === 'quotes') {
-        const quoteMatch = cleanLine.match(/^(quote\s*\d*:|")(.+)"?$/i);
-        if (quoteMatch && quoteMatch[2]) {
-          const quote = quoteMatch[2].trim().replace(/[""]/g, '');
-          if (quote.length > 10 && quotes.length < 2) {
-            quotes.push(quote.substring(0, 80));
-          }
-        }
-        // Also catch lines that look like quotes
-        else if (cleanLine.length > 15 && cleanLine.length < 120 && quotes.length < 2) {
-          const potentialQuote = cleanLine.replace(/[""]/g, '').trim();
-          if (potentialQuote.length > 15) {
-            quotes.push(potentialQuote.substring(0, 80));
+        } else if (currentSection === 'quotes' && cleanLine) {
+          if (quotes.length < 2) { // Limit to 2 quotes
+            quotes.push(cleanLine.replace(/[""]/g, '').substring(0, 80));
           }
         }
       }
     });
 
-    // Enhanced fallback parsing
+    // Fallback parsing with strict limits
     if (keyPoints.length === 0 && quotes.length === 0) {
-      console.log('⚠️ Using enhanced fallback parsing');
-      
-      // Look for any numbered or bulleted items
-      lines.forEach(line => {
-        const cleanLine = line.trim();
-        if ((cleanLine.match(/^[\d*-]/) || cleanLine.length > 30) && cleanLine.length < 150) {
-          const content = cleanLine.replace(/^[\d*-.]+\s*/, '').trim();
-          if (content.length > 15) {
-            if (keyPoints.length < 2) {
-              keyPoints.push(content.substring(0, 100));
-            } else if (quotes.length < 2) {
-              quotes.push(content.replace(/[""]/g, '').substring(0, 80));
-            }
-          }
-        }
-      });
-      
-      // If still nothing, use first few meaningful lines
-      if (keyPoints.length === 0 && quotes.length === 0) {
-        const meaningfulLines = lines.filter(line => 
-          line.trim().length > 20 && line.trim().length < 120
-        );
-        
-        for (let i = 0; i < Math.min(3, meaningfulLines.length); i++) {
-          if (i < 2) {
-            keyPoints.push(meaningfulLines[i].trim().substring(0, 100));
-          } else if (quotes.length < 2) {
-            quotes.push(meaningfulLines[i].trim().replace(/[""]/g, '').substring(0, 80));
-          }
+      const cleanLines = lines.filter(line => line.length > 20 && line.length < 150);
+      for (let i = 0; i < Math.min(3, cleanLines.length); i++) {
+        if (i < 2) {
+          keyPoints.push(cleanLines[i].substring(0, 100));
+        } else if (quotes.length < 2) {
+          quotes.push(cleanLines[i].substring(0, 80));
         }
       }
     }
 
-    const result = {
-      keyPoints: keyPoints.length > 0 ? keyPoints : ["Main discussion points"],
-      quotes: quotes.length > 0 ? quotes : ["Key statement from thread"],
+    return {
+      keyPoints: keyPoints.length > 0 ? keyPoints.slice(0, 3) : ["Main discussion points"],
+      quotes: quotes.length > 0 ? quotes.slice(0, 2) : ["Key statement from thread"],
       sentiment: sentiment,
       wordCount: 0,
       timeToRead: timeToRead || Math.max(1, Math.floor(lines.length / 50))
     };
-    
-    console.log('✅ Parsed summary result:', result);
-    return result;
   }
 }
 
