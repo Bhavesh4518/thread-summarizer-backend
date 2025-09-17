@@ -117,7 +117,7 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
     }
   }
 
-  // Hugging Face fallback methods
+  // Hugging Face fallback methods with proper task handling
   async summarizeWithHuggingFace(threadContent) {
     try {
       console.log('🚀 Calling Hugging Face for summarization...');
@@ -126,62 +126,87 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
         throw new Error('Hugging Face service not initialized');
       }
       
-      // Try multiple models in order of preference
-      const modelsToTry = [
-        'facebook/bart-large-cnn', // Specifically for summarization
-        'sshleifer/distilbart-cnn-12-6', // Lightweight summarization
-        'google/flan-t5-small', // Smaller instruction model
-        'gpt2' // General text generation (last resort)
+      // Try summarization models first (proper task)
+      const summarizationModels = [
+        'facebook/bart-large-cnn',
+        'sshleifer/distilbart-cnn-12-6'
       ];
       
-      for (const model of modelsToTry) {
+      // Try summarization models
+      for (const model of summarizationModels) {
         try {
-          console.log(`🔍 Trying Hugging Face model: ${model}`);
+          console.log(`🔍 Trying summarization model: ${model}`);
           
-          // Prepare prompt for Hugging Face
-          const prompt = `Summarize this social media thread with exactly 3 key points and 2 notable quotes.
+          const response = await this.hf.summarization({
+            model: model,
+            inputs: threadContent.text.substring(0, 1000),
+            parameters: {
+              max_length: 150,
+              min_length: 50,
+              do_sample: false
+            }
+          });
+          
+          console.log(`✅ Hugging Face summarization with ${model}:`, response.summary_text.substring(0, 100) + '...');
+          
+          // Convert summary to our format
+          return this.convertHFSummaryToOurFormat(response.summary_text);
+        } catch (modelError) {
+          console.warn(`⚠️ Summarization model ${model} failed:`, modelError.message);
+          continue;
+        }
+      }
+      
+      // Fallback to text generation models
+      const generationModels = [
+        'google/flan-t5-base',
+        'gpt2'
+      ];
+      
+      for (const model of generationModels) {
+        try {
+          console.log(`🔍 Trying text generation model: ${model}`);
+          
+          const prompt = `Summarize this social media thread with exactly 3 key points and 2 notable quotes:
           
 Thread content: ${threadContent.text.substring(0, 800)}
 
 Format your response as:
 Key Points:
 1. [First key point]
-2. [Second key point]
+2. [Second key point]  
 3. [Third key point]
 
 Quotes:
 Quote 1: [First notable quote]
 Quote 2: [Second notable quote]`;
 
-          // Use text generation with the current model
           const response = await this.hf.textGeneration({
             model: model,
             inputs: prompt,
             parameters: {
               max_new_tokens: 200,
               temperature: 0.7,
-              top_p: 0.9,
-              repetition_penalty: 1.2
+              top_p: 0.9
             }
           });
 
-          console.log(`✅ Hugging Face summary response with ${model}:`, response.generated_text.substring(0, 100) + '...');
+          console.log(`✅ Hugging Face text generation with ${model}:`, response.generated_text.substring(0, 100) + '...');
           
-          // Parse the response
           return this.parseSummaryResponse(response.generated_text);
         } catch (modelError) {
-          console.warn(`⚠️ Model ${model} failed:`, modelError.message);
-          // Continue to next model
+          console.warn(`⚠️ Text generation model ${model} failed:`, modelError.message);
           continue;
         }
       }
       
-      // If all models fail, throw an error
       throw new Error('All Hugging Face models failed');
       
     } catch (error) {
       console.error('💥 Hugging Face summarization error:', error);
-      throw error;
+      
+      // Ultimate fallback - basic summary
+      return this.generateBasicSummary(threadContent);
     }
   }
 
@@ -193,20 +218,20 @@ Quote 2: [Second notable quote]`;
         throw new Error('Hugging Face service not initialized');
       }
       
-      // Try multiple models for reply generation
+      // Try text generation models for replies
       const modelsToTry = [
-        'microsoft/DialoGPT-medium', // Specifically for dialogue
-        'google/flan-t5-small', // Instruction-following model
-        'gpt2' // General text generation
+        'google/flan-t5-base',
+        'microsoft/DialoGPT-medium',
+        'gpt2'
       ];
       
       for (const model of modelsToTry) {
         try {
-          console.log(`🔍 Trying Hugging Face model for reply: ${model}`);
+          console.log(`🔍 Trying reply generation with model: ${model}`);
           
           const prompt = `Generate a human-like response to this social media thread:
           
-Thread content: ${threadContent.text.substring(0, 400)}
+Thread content: ${threadContent.text.substring(0, 500)}
 Summary key points: ${summary.keyPoints.slice(0, 2).join(', ')}
 
 Generate only a concise, natural response (1-2 sentences):`;
@@ -221,23 +246,131 @@ Generate only a concise, natural response (1-2 sentences):`;
             }
           });
 
-          console.log(`✅ Hugging Face reply response with ${model}:`, response.generated_text.substring(0, 50) + '...');
+          console.log(`✅ Hugging Face reply with ${model}:`, response.generated_text.substring(0, 50) + '...');
           
           return response.generated_text.trim();
         } catch (modelError) {
-          console.warn(`⚠️ Model ${model} failed for reply:`, modelError.message);
-          // Continue to next model
+          console.warn(`⚠️ Reply model ${model} failed:`, modelError.message);
           continue;
         }
       }
       
-      // If all models fail, throw an error
-      throw new Error('All Hugging Face models failed for reply generation');
+      throw new Error('All Hugging Face reply models failed');
       
     } catch (error) {
       console.error('💥 Hugging Face reply error:', error);
-      throw error;
+      
+      // Ultimate fallback - basic reply
+      return this.generateBasicReply();
     }
+  }
+
+  // Convert Hugging Face summary to our format
+  convertHFSummaryToOurFormat(hfSummary) {
+    console.log('🔄 Converting HF summary to our format');
+    
+    // Simple conversion - split into key points and quotes
+    const sentences = hfSummary.split(/[.!?]+/).filter(s => s.trim().length > 10);
+    
+    const keyPoints = [];
+    const quotes = [];
+    
+    // Extract key points from sentences
+    for (let i = 0; i < Math.min(3, sentences.length); i++) {
+      if (i < 2) {
+        keyPoints.push(sentences[i].trim().substring(0, 100));
+      } else if (quotes.length < 2) {
+        quotes.push(sentences[i].trim().substring(0, 80));
+      }
+    }
+    
+    // Fill in if needed
+    if (keyPoints.length === 0) {
+      keyPoints.push("Main discussion points from the thread");
+    }
+    
+    if (quotes.length === 0) {
+      quotes.push("Notable statement from the discussion");
+    }
+    
+    return {
+      keyPoints: keyPoints,
+      quotes: quotes,
+      sentiment: "neutral",
+      wordCount: hfSummary.length,
+      timeToRead: Math.ceil(hfSummary.length / 200)
+    };
+  }
+
+  // Basic fallback methods
+  generateBasicSummary(threadContent) {
+    console.log('⚠️ Using basic summary fallback');
+    const text = threadContent.text || '';
+    
+    if (text.trim().length === 0) {
+      return {
+        keyPoints: ["No content found to summarize"],
+        quotes: ["No quotes available"],
+        sentiment: "neutral",
+        wordCount: 0,
+        timeToRead: 0
+      };
+    }
+
+    const lines = text.split('\n')
+      .filter(line => line.trim().length > 10)
+      .map(line => line.trim());
+
+    const keyPoints = [];
+    const quotes = [];
+
+    const meaningfulLines = lines.filter(line => 
+      line.length > 30 && 
+      line.split(' ').length > 5 &&
+      !line.includes('http')
+    );
+
+    for (let i = 0; i < Math.min(3, meaningfulLines.length); i++) {
+      const line = meaningfulLines[i];
+      keyPoints.push(line.substring(0, 100) + (line.length > 100 ? '...' : ''));
+    }
+
+    if (keyPoints.length === 0 && lines.length > 0) {
+      keyPoints.push(lines[0].substring(0, 100) + (lines[0].length > 100 ? '...' : ''));
+    }
+
+    const shortLines = lines.filter(line => 
+      line.length > 20 && line.length < 100
+    );
+
+    for (let i = 0; i < Math.min(2, shortLines.length); i++) {
+      quotes.push(shortLines[i]);
+    }
+
+    if (quotes.length === 0 && lines.length > 1) {
+      quotes.push(lines[Math.floor(lines.length / 2)].substring(0, 80) + '...');
+    }
+
+    return {
+      keyPoints: keyPoints.length > 0 ? keyPoints : ["Thread content analysis"],
+      quotes: quotes.length > 0 ? quotes : ["Key insights from discussion"],
+      sentiment: "neutral",
+      wordCount: text.length,
+      timeToRead: Math.ceil(text.length / 200)
+    };
+  }
+
+  generateBasicReply() {
+    console.log('⚠️ Using basic reply fallback');
+    const sampleReplies = [
+      "Great insights shared here! Thanks for breaking this down.",
+      "This is really helpful information. Appreciate the detailed explanation.",
+      "Interesting perspective on this topic. Learned something new today!",
+      "Thanks for sharing these thoughts. Very informative thread.",
+      "This adds a lot of value to the conversation. Well articulated!"
+    ];
+    
+    return sampleReplies[Math.floor(Math.random() * sampleReplies.length)];
   }
 
   async callGeminiAPI(prompt) {
@@ -310,18 +443,18 @@ Generate only a concise, natural response (1-2 sentences):`;
       } else if (line.trim().startsWith('-') || line.trim().startsWith('*') || line.trim().match(/^\d+\./)) {
         const cleanLine = line.replace(/^[-*\d.]+\s*/, '').trim();
         if (currentSection === 'points' && cleanLine) {
-          if (keyPoints.length < 3) { // Limit to 3 key points
+          if (keyPoints.length < 3) {
             keyPoints.push(cleanLine.substring(0, 100));
           }
         } else if (currentSection === 'quotes' && cleanLine) {
-          if (quotes.length < 2) { // Limit to 2 quotes
+          if (quotes.length < 2) {
             quotes.push(cleanLine.replace(/[""]/g, '').substring(0, 80));
           }
         }
       }
     });
 
-    // Fallback parsing with strict limits
+    // Fallback parsing if structured parsing didn't work
     if (keyPoints.length === 0 && quotes.length === 0) {
       const cleanLines = lines.filter(line => line.length > 20 && line.length < 150);
       for (let i = 0; i < Math.min(3, cleanLines.length); i++) {
