@@ -25,8 +25,20 @@ Thread content: ${threadContent.text.substring(0, 2500)}
 
 Format your response as clean text with clear sections. No markdown, no extra formatting.`;
 
-      return await this.retryOperation(() => this.callGeminiAPI(prompt));
+      // Get the raw response from Gemini
+      const rawResponse = await this.retryOperation(() => this.callGeminiAPI(prompt));
+      
+      // Parse and structure the response
+      const parsedResponse = this.parseSummaryResponse(rawResponse);
+      
+      console.log('🤖 Gemini summary response:', {
+        raw: rawResponse.substring(0, 100) + '...',
+        parsed: parsedResponse
+      });
+      
+      return parsedResponse;
     } catch (error) {
+      console.error('💥 Gemini summary error:', error);
       throw new Error(`Gemini API error: ${error.message}`);
     }
   }
@@ -46,8 +58,11 @@ Summary key points: ${summary.keyPoints.slice(0, 2).join(', ')}
 
 Generate only the response text, nothing else. Keep it concise and natural.`;
 
-      return await this.retryOperation(() => this.callGeminiAPI(prompt));
+      const response = await this.retryOperation(() => this.callGeminiAPI(prompt));
+      console.log('🤖 Gemini reply response:', response.substring(0, 50) + '...');
+      return response;
     } catch (error) {
+      console.error('💥 Gemini reply error:', error);
       throw new Error(`Gemini API error: ${error.message}`);
     }
   }
@@ -79,6 +94,7 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
         
         // Wait before retrying (exponential backoff)
         const waitTime = delay * Math.pow(2, i);
+        console.log(`⏳ Retrying in ${waitTime}ms... (attempt ${i + 1}/${maxRetries})`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
       }
     }
@@ -87,6 +103,8 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
   }
 
   parseSummaryResponse(aiResponse) {
+    console.log('🔍 Parsing AI response:', aiResponse.substring(0, 100) + '...');
+    
     const lines = aiResponse.split('\n').filter(line => line.trim());
     
     const keyPoints = [];
@@ -124,9 +142,10 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
 
     // Fallback parsing with strict limits
     if (keyPoints.length === 0 && quotes.length === 0) {
+      console.log('⚠️ Using fallback parsing');
       const cleanLines = lines.filter(line => line.length > 20 && line.length < 150);
       for (let i = 0; i < Math.min(3, cleanLines.length); i++) {
-        if (i < 2) {
+        if (keyPoints.length < 2) {
           keyPoints.push(cleanLines[i].substring(0, 100));
         } else if (quotes.length < 2) {
           quotes.push(cleanLines[i].substring(0, 80));
@@ -134,13 +153,16 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
       }
     }
 
-    return {
+    const result = {
       keyPoints: keyPoints.length > 0 ? keyPoints.slice(0, 3) : ["Main discussion points"],
       quotes: quotes.length > 0 ? quotes.slice(0, 2) : ["Key statement from thread"],
       sentiment: sentiment,
       wordCount: 0,
       timeToRead: timeToRead || Math.max(1, Math.floor(lines.length / 50))
     };
+    
+    console.log('✅ Parsed summary result:', result);
+    return result;
   }
 }
 
