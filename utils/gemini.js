@@ -124,7 +124,7 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
     }
   }
 
-  // Fast Hugging Face fallback with timeout
+  // Working Hugging Face fallback with available models
   async summarizeWithHuggingFace(threadContent) {
     try {
       console.log('🚀 Calling Hugging Face for summarization...');
@@ -133,27 +133,43 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
         throw new Error('Hugging Face service not initialized');
       }
       
-      // Use a fast, lightweight model with strict timeout
-      const prompt = `Summarize social media thread. 3 key points, 2 quotes.
-Thread: ${threadContent.text.substring(0, 500)}`;
-
-      const response = await this.callWithTimeout(async () => {
-        return await this.hf.textGeneration({
-          model: 'google/flan-t5-small', // Fast, small model
-          inputs: prompt,
-          parameters: {
-            max_new_tokens: 150,
-            temperature: 0.7,
-            top_p: 0.9,
-            do_sample: true
-          }
-        });
-      }, 15000); // 15 second timeout
-
-      console.log('✅ Hugging Face summary response:', response.generated_text.substring(0, 100) + '...');
+      // Try multiple available models in order of preference
+      const modelsToTry = [
+        'gpt2', // Always available
+        'distilgpt2' // Lightweight alternative
+      ];
       
-      // Convert to our format
-      return this.quickParseHFResponse(response.generated_text);
+      for (const model of modelsToTry) {
+        try {
+          console.log(`🔍 Trying Hugging Face model: ${model}`);
+          
+          const prompt = `Summarize social media thread. 3 key points, 2 quotes. Thread: ${threadContent.text.substring(0, 500)}`;
+
+          const response = await this.callWithTimeout(async () => {
+            return await this.hf.textGeneration({
+              model: model,
+              inputs: prompt,
+              parameters: {
+                max_new_tokens: 150,
+                temperature: 0.7,
+                top_p: 0.9,
+                do_sample: true
+              }
+            });
+          }, 15000); // 15 second timeout
+
+          console.log(`✅ Hugging Face summary with ${model}:`, response.generated_text.substring(0, 100) + '...');
+          
+          // Convert to our format
+          return this.convertSimpleHFResponse(response.generated_text);
+          
+        } catch (modelError) {
+          console.warn(`⚠️ Model ${model} failed:`, modelError.message);
+          continue;
+        }
+      }
+      
+      throw new Error('All available Hugging Face models failed');
       
     } catch (error) {
       console.error('💥 Hugging Face summarization error:', error);
@@ -171,27 +187,46 @@ Thread: ${threadContent.text.substring(0, 500)}`;
         throw new Error('Hugging Face service not initialized');
       }
       
-      // Use a fast dialogue model with timeout
-      const prompt = `Social media reply to: ${threadContent.text.substring(0, 300)}. 
+      // Try multiple available models
+      const modelsToTry = [
+        'gpt2', // Always available
+        'distilgpt2' // Lightweight alternative
+      ];
+      
+      for (const model of modelsToTry) {
+        try {
+          console.log(`🔍 Trying reply generation with model: ${model}`);
+          
+          const prompt = `Social media reply to: ${threadContent.text.substring(0, 300)}. 
 Key points: ${summary.keyPoints.slice(0, 2).join(', ')}. 
 Concise reply:`;
 
-      const response = await this.callWithTimeout(async () => {
-        return await this.hf.textGeneration({
-          model: 'microsoft/DialoGPT-small', // Fast dialogue model
-          inputs: prompt,
-          parameters: {
-            max_new_tokens: 80,
-            temperature: 0.8,
-            top_p: 0.9,
-            do_sample: true
-          }
-        });
-      }, 10000); // 10 second timeout
+          const response = await this.callWithTimeout(async () => {
+            return await this.hf.textGeneration({
+              model: model,
+              inputs: prompt,
+              parameters: {
+                max_new_tokens: 80,
+                temperature: 0.8,
+                top_p: 0.9,
+                do_sample: true
+              }
+            });
+          }, 10000); // 10 second timeout
 
-      console.log('✅ Hugging Face reply response:', response.generated_text.substring(0, 50) + '...');
+          console.log(`✅ Hugging Face reply with ${model}:`, response.generated_text.substring(0, 50) + '...');
+          
+          // Extract first sentence
+          const sentences = response.generated_text.trim().split(/[.!?]+/);
+          return sentences[0] ? sentences[0].trim() + '.' : response.generated_text.trim().split('\n')[0] || "Thanks for sharing!";
+          
+        } catch (modelError) {
+          console.warn(`⚠️ Reply model ${model} failed:`, modelError.message);
+          continue;
+        }
+      }
       
-      return response.generated_text.trim().split('\n')[0] || "Thanks for sharing!";
+      throw new Error('All available Hugging Face reply models failed');
       
     } catch (error) {
       console.error('💥 Hugging Face reply error:', error);
@@ -201,48 +236,38 @@ Concise reply:`;
     }
   }
 
-  // Quick parsing for Hugging Face responses
-  quickParseHFResponse(hfResponse) {
-    console.log('🔄 Quick parsing HF response');
+  // Convert simple HF response to our format
+  convertSimpleHFResponse(hfResponse) {
+    console.log('🔄 Converting simple HF response to our format');
     
-    // Simple heuristic parsing
     const text = hfResponse.trim();
-    const lines = text.split('\n').filter(line => line.trim().length > 10);
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
     
     const keyPoints = [];
     const quotes = [];
     
-    // Extract key points and quotes
-    if (lines.length > 0) {
-      // Try to find numbered/bulleted points
-      const pointLines = lines.filter(line => 
-        line.match(/^[\d*-]/) || line.length > 30
-      );
-      
-      pointLines.forEach((line, index) => {
-        const cleanLine = line.replace(/^[\d*-.]+\s*/, '').trim();
-        if (cleanLine.length > 15) {
-          if (keyPoints.length < 2) {
-            keyPoints.push(cleanLine.substring(0, 100));
-          } else if (quotes.length < 2) {
-            quotes.push(cleanLine.substring(0, 80));
-          }
-        }
-      });
-      
-      // Fill in if needed
-      if (keyPoints.length === 0) {
-        keyPoints.push(lines[0].substring(0, 100));
-      }
-      
-      if (quotes.length === 0 && lines.length > 1) {
-        quotes.push(lines[1].substring(0, 80));
+    // Simple extraction
+    for (let i = 0; i < Math.min(3, sentences.length); i++) {
+      const sentence = sentences[i].trim();
+      if (i < 2) {
+        keyPoints.push(sentence.substring(0, 100));
+      } else if (quotes.length < 2) {
+        quotes.push(sentence.substring(0, 80));
       }
     }
     
+    // Fill in if needed
+    if (keyPoints.length === 0) {
+      keyPoints.push("Main discussion points from the thread");
+    }
+    
+    if (quotes.length === 0) {
+      quotes.push("Notable statement from the discussion");
+    }
+    
     return {
-      keyPoints: keyPoints.length > 0 ? keyPoints : ["Main discussion points"],
-      quotes: quotes.length > 0 ? quotes : ["Key statement from thread"],
+      keyPoints: keyPoints,
+      quotes: quotes,
       sentiment: "neutral",
       wordCount: text.length,
       timeToRead: Math.ceil(text.length / 200)
@@ -271,7 +296,6 @@ Concise reply:`;
     const keyPoints = [];
     const quotes = [];
 
-    // Simple extraction - first few meaningful lines
     const meaningfulLines = lines.filter(line => 
       line.length > 30 && 
       line.split(' ').length > 5 &&
@@ -317,6 +341,7 @@ Concise reply:`;
       "Thanks for the detailed explanation.",
       "This adds value to the conversation."
     ];
+    
     return sampleReplies[Math.floor(Math.random() * sampleReplies.length)];
   }
 
@@ -343,37 +368,6 @@ Concise reply:`;
           reject(error);
         });
     });
-  }
-
-  async retryOperation(operation, maxRetries = 2, delay = 500) { // Reduced retries and delay
-    let lastError;
-    
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        return await operation();
-      } catch (error) {
-        lastError = error;
-        
-        // Don't retry on quota errors or timeouts
-        if (error.message.includes('429') || 
-            error.message.includes('quota') || 
-            error.message.includes('timeout')) {
-          throw error;
-        }
-        
-        // If this is the last retry, throw the error
-        if (i === maxRetries - 1) {
-          throw error;
-        }
-        
-        // Wait before retrying
-        const waitTime = delay * (i + 1);
-        console.log(`⏳ Retrying in ${waitTime}ms... (attempt ${i + 1}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-      }
-    }
-    
-    throw lastError;
   }
 
   parseSummaryResponse(aiResponse) {
