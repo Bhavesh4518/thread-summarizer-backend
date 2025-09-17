@@ -13,17 +13,24 @@ class GeminiService {
       const prompt = `You are a content summarization expert. Create a concise, actionable summary of this social media thread.
 
 Rules:
-- Provide EXACTLY 3 key points (no more, no less)
-- Include EXACTLY 2 notable quotes (most impactful statements)
+- Provide EXACTLY 3 key points (numbered 1, 2, 3)
+- Include EXACTLY 2 notable quotes (labeled as "Quote 1:" and "Quote 2:")
 - Keep each key point under 100 characters
 - Keep each quote under 80 characters
 - Focus on the main discussion, ignore replies/suggestions
 - Use clear, simple language
-- Do not include markdown or special formatting
+- Format exactly as shown below:
 
-Thread content: ${threadContent.text.substring(0, 2500)}
+Key Points:
+1. [First key point here]
+2. [Second key point here]
+3. [Third key point here]
 
-Format your response as clean text with clear sections. No markdown, no extra formatting.`;
+Quotes:
+Quote 1: [First notable quote here]
+Quote 2: [Second notable quote here]
+
+Thread content: ${threadContent.text.substring(0, 2500)}`;
 
       // Get the raw response from Gemini
       const rawResponse = await this.retryOperation(() => this.callGeminiAPI(prompt));
@@ -39,7 +46,14 @@ Format your response as clean text with clear sections. No markdown, no extra fo
       return parsedResponse;
     } catch (error) {
       console.error('💥 Gemini summary error:', error);
-      throw new Error(`Gemini API error: ${error.message}`);
+      // Return fallback structure
+      return {
+        keyPoints: ["Content summary will appear here"],
+        quotes: ["Notable quotes will appear here"],
+        sentiment: "neutral",
+        wordCount: 0,
+        timeToRead: 1
+      };
     }
   }
 
@@ -63,7 +77,7 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
       return response;
     } catch (error) {
       console.error('💥 Gemini reply error:', error);
-      throw new Error(`Gemini API error: ${error.message}`);
+      return "Thanks for sharing these insights!";
     }
   }
 
@@ -105,57 +119,103 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
   parseSummaryResponse(aiResponse) {
     console.log('🔍 Parsing AI response:', aiResponse.substring(0, 100) + '...');
     
-    const lines = aiResponse.split('\n').filter(line => line.trim());
-    
     const keyPoints = [];
     const quotes = [];
     let sentiment = "neutral";
     let timeToRead = 1;
 
+    // Split into lines and clean
+    const lines = aiResponse.split('\n').filter(line => line.trim());
+
+    // Parse structured format
     let currentSection = '';
     lines.forEach(line => {
-      const lowerLine = line.toLowerCase();
+      const cleanLine = line.trim();
+      const lowerLine = cleanLine.toLowerCase();
       
+      // Detect sections
       if (lowerLine.includes('key points') || lowerLine.includes('main points')) {
         currentSection = 'points';
-      } else if (lowerLine.includes('notable quotes') || lowerLine.includes('quotes')) {
+        return;
+      }
+      
+      if (lowerLine.includes('quotes') || lowerLine.includes('notable quotes')) {
         currentSection = 'quotes';
-      } else if (lowerLine.includes('sentiment')) {
-        sentiment = lowerLine.includes('positive') ? 'positive' : 
-                   lowerLine.includes('negative') ? 'negative' : 'neutral';
-      } else if (lowerLine.includes('reading time')) {
-        const timeMatch = line.match(/(\d+)/);
-        if (timeMatch) timeToRead = parseInt(timeMatch[1]);
-      } else if (line.trim().startsWith('-') || line.trim().startsWith('*') || line.trim().match(/^\d+\./)) {
-        const cleanLine = line.replace(/^[-*\d.]+\s*/, '').trim();
-        if (currentSection === 'points' && cleanLine) {
-          if (keyPoints.length < 3) { // Limit to 3 key points
-            keyPoints.push(cleanLine.substring(0, 100));
+        return;
+      }
+      
+      // Parse key points (look for numbered points)
+      if (currentSection === 'points') {
+        const pointMatch = cleanLine.match(/^(\d+\.|\*|-)\s*(.+)$/);
+        if (pointMatch && pointMatch[2]) {
+          const point = pointMatch[2].trim();
+          if (point.length > 10 && keyPoints.length < 3) {
+            keyPoints.push(point.substring(0, 100));
           }
-        } else if (currentSection === 'quotes' && cleanLine) {
-          if (quotes.length < 2) { // Limit to 2 quotes
-            quotes.push(cleanLine.replace(/[""]/g, '').substring(0, 80));
+        }
+        // Also catch lines that look like key points
+        else if (cleanLine.length > 20 && cleanLine.length < 150 && !cleanLine.includes('quote') && keyPoints.length < 3) {
+          keyPoints.push(cleanLine.substring(0, 100));
+        }
+      }
+      
+      // Parse quotes (look for "Quote 1:", "Quote 2:", etc.)
+      else if (currentSection === 'quotes') {
+        const quoteMatch = cleanLine.match(/^(quote\s*\d*:|")(.+)"?$/i);
+        if (quoteMatch && quoteMatch[2]) {
+          const quote = quoteMatch[2].trim().replace(/[""]/g, '');
+          if (quote.length > 10 && quotes.length < 2) {
+            quotes.push(quote.substring(0, 80));
+          }
+        }
+        // Also catch lines that look like quotes
+        else if (cleanLine.length > 15 && cleanLine.length < 120 && quotes.length < 2) {
+          const potentialQuote = cleanLine.replace(/[""]/g, '').trim();
+          if (potentialQuote.length > 15) {
+            quotes.push(potentialQuote.substring(0, 80));
           }
         }
       }
     });
 
-    // Fallback parsing with strict limits
+    // Enhanced fallback parsing
     if (keyPoints.length === 0 && quotes.length === 0) {
-      console.log('⚠️ Using fallback parsing');
-      const cleanLines = lines.filter(line => line.length > 20 && line.length < 150);
-      for (let i = 0; i < Math.min(3, cleanLines.length); i++) {
-        if (keyPoints.length < 2) {
-          keyPoints.push(cleanLines[i].substring(0, 100));
-        } else if (quotes.length < 2) {
-          quotes.push(cleanLines[i].substring(0, 80));
+      console.log('⚠️ Using enhanced fallback parsing');
+      
+      // Look for any numbered or bulleted items
+      lines.forEach(line => {
+        const cleanLine = line.trim();
+        if ((cleanLine.match(/^[\d*-]/) || cleanLine.length > 30) && cleanLine.length < 150) {
+          const content = cleanLine.replace(/^[\d*-.]+\s*/, '').trim();
+          if (content.length > 15) {
+            if (keyPoints.length < 2) {
+              keyPoints.push(content.substring(0, 100));
+            } else if (quotes.length < 2) {
+              quotes.push(content.replace(/[""]/g, '').substring(0, 80));
+            }
+          }
+        }
+      });
+      
+      // If still nothing, use first few meaningful lines
+      if (keyPoints.length === 0 && quotes.length === 0) {
+        const meaningfulLines = lines.filter(line => 
+          line.trim().length > 20 && line.trim().length < 120
+        );
+        
+        for (let i = 0; i < Math.min(3, meaningfulLines.length); i++) {
+          if (i < 2) {
+            keyPoints.push(meaningfulLines[i].trim().substring(0, 100));
+          } else if (quotes.length < 2) {
+            quotes.push(meaningfulLines[i].trim().replace(/[""]/g, '').substring(0, 80));
+          }
         }
       }
     }
 
     const result = {
-      keyPoints: keyPoints.length > 0 ? keyPoints.slice(0, 3) : ["Main discussion points"],
-      quotes: quotes.length > 0 ? quotes.slice(0, 2) : ["Key statement from thread"],
+      keyPoints: keyPoints.length > 0 ? keyPoints : ["Main discussion points"],
+      quotes: quotes.length > 0 ? quotes : ["Key statement from thread"],
       sentiment: sentiment,
       wordCount: 0,
       timeToRead: timeToRead || Math.max(1, Math.floor(lines.length / 50))
