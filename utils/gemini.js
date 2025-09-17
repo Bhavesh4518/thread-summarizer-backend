@@ -72,7 +72,7 @@ Thread content: ${threadContent.text.substring(0, 2500)}`;
         }
       }
       
-      // Return intelligent fallback structure with actual content analysis
+      // Return intelligent fallback structure
       return this.generateIntelligentSummary(threadContent);
     }
   }
@@ -114,12 +114,11 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
         }
       }
       
-      // Intelligent fallback reply
       return this.generateIntelligentReply(threadContent);
     }
   }
 
-  // Working Hugging Face fallback with proper error handling
+  // Hugging Face fallback with your recommended models
   async summarizeWithHuggingFace(threadContent) {
     try {
       console.log('🚀 Calling Hugging Face for summarization...');
@@ -128,47 +127,68 @@ Generate only the response text, nothing else. Keep it concise and natural.`;
         throw new Error('Hugging Face service not initialized');
       }
       
-      // Try the most reliable approach - simple text generation
-      const prompt = `Summarize this social media content with 3 key points and 2 quotes:
+      // Try your recommended models in order of preference
+      const modelsToTry = [
+        'sshleifer/distilbart-cnn-12-6', // Lighter, faster version
+        'facebook/bart-large-cnn',       // High-quality abstractive
+        'google/t5-small',               // Versatile, multi-task
+        'google/t5-base'                 // Better speed/performance trade-off
+      ];
       
-Content: ${threadContent.text.substring(0, 800)}`;
-
-      // Use a simple, reliable approach
-      const response = await this.callWithTimeout(async () => {
-        // Try without specifying model first (let HF auto-select)
+      for (const model of modelsToTry) {
         try {
-          return await this.hf.textGeneration({
-            inputs: prompt,
-            parameters: {
-              max_new_tokens: 200,
-              temperature: 0.7,
-              top_p: 0.9
-            }
-          });
-        } catch (error) {
-          // If auto-selection fails, try with a simple model
-          console.log('⚠️ Auto-selection failed, trying with explicit model...');
-          return await this.hf.textGeneration({
-            model: 'gpt2', // Most widely available model
-            inputs: prompt.substring(0, 200), // Shorter input for reliability
-            parameters: {
-              max_new_tokens: 100,
-              temperature: 0.7,
-              top_p: 0.9
-            }
-          });
+          console.log(`🔍 Trying Hugging Face model: ${model}`);
+          
+          // Use summarization task specifically for these models
+          let response;
+          
+          if (model.includes('t5')) {
+            // For T5 models, use text-to-text format
+            response = await this.callWithTimeout(async () => {
+              return await this.hf.textGeneration({
+                model: model,
+                inputs: `summarize: ${threadContent.text.substring(0, 800)}`,
+                parameters: {
+                  max_new_tokens: 200,
+                  temperature: 0.7,
+                  top_p: 0.9,
+                  repetition_penalty: 1.2
+                }
+              });
+            }, 25000); // 25 second timeout
+          } else {
+            // For BART models, use summarization task
+            response = await this.callWithTimeout(async () => {
+              return await this.hf.summarization({
+                model: model,
+                inputs: threadContent.text.substring(0, 1000),
+                parameters: {
+                  max_length: 150,
+                  min_length: 50,
+                  do_sample: false
+                }
+              });
+            }, 30000); // 30 second timeout
+          }
+          
+          console.log(`✅ Hugging Face summary with ${model}:`, response.generated_text ? response.generated_text.substring(0, 100) : response.summary_text.substring(0, 100) + '...');
+          
+          // Convert to our format
+          const summaryText = response.generated_text || response.summary_text || '';
+          return this.convertHFSummaryToOurFormat(summaryText);
+          
+        } catch (modelError) {
+          console.warn(`⚠️ Model ${model} failed:`, modelError.message);
+          continue;
         }
-      }, 20000); // 20 second timeout
-
-      console.log('✅ Hugging Face summary response:', response.generated_text.substring(0, 100) + '...');
+      }
       
-      // Parse the response intelligently
-      return this.parseIntelligentHFResponse(response.generated_text);
+      throw new Error('All recommended Hugging Face models failed');
       
     } catch (error) {
       console.error('💥 Hugging Face summarization error:', error);
       
-      // Ultimate fallback - intelligent summary from content
+      // Ultimate fallback - intelligent summary
       return this.generateIntelligentSummary(threadContent);
     }
   }
@@ -181,36 +201,48 @@ Content: ${threadContent.text.substring(0, 800)}`;
         throw new Error('Hugging Face service not initialized');
       }
       
-      const prompt = `Social media reply to: ${threadContent.text.substring(0, 200)}. 
-Concise, natural response:`;
-
-      const response = await this.callWithTimeout(async () => {
-        try {
-          return await this.hf.textGeneration({
-            inputs: prompt,
-            parameters: {
-              max_new_tokens: 80,
-              temperature: 0.8,
-              top_p: 0.9
-            }
-          });
-        } catch (error) {
-          // Fallback to simpler approach
-          return await this.hf.textGeneration({
-            model: 'gpt2',
-            inputs: `Reply: ${threadContent.text.substring(0, 100)}`,
-            parameters: {
-              max_new_tokens: 50,
-              temperature: 0.8
-            }
-          });
-        }
-      }, 15000); // 15 second timeout
-
-      console.log('✅ Hugging Face reply response:', response.generated_text.substring(0, 50) + '...');
+      // Try text generation models for replies
+      const modelsToTry = [
+        'google/t5-base',      // Good for text generation
+        'google/t5-small',     // Faster alternative
+        'gpt2'                 // Always available fallback
+      ];
       
-      // Extract clean reply
-      return this.extractCleanReply(response.generated_text);
+      for (const model of modelsToTry) {
+        try {
+          console.log(`🔍 Trying reply generation with model: ${model}`);
+          
+          const prompt = `Generate a human-like response to this social media thread:
+          
+Thread content: ${threadContent.text.substring(0, 500)}
+Summary key points: ${summary.keyPoints.slice(0, 2).join(', ')}
+
+Generate only a concise, natural response (1-2 sentences):`;
+
+          const response = await this.callWithTimeout(async () => {
+            return await this.hf.textGeneration({
+              model: model,
+              inputs: prompt,
+              parameters: {
+                max_new_tokens: 100,
+                temperature: 0.8,
+                top_p: 0.9,
+                repetition_penalty: 1.2
+              }
+            });
+          }, 20000); // 20 second timeout
+
+          console.log(`✅ Hugging Face reply with ${model}:`, response.generated_text.substring(0, 50) + '...');
+          
+          return response.generated_text.trim();
+          
+        } catch (modelError) {
+          console.warn(`⚠️ Reply model ${model} failed:`, modelError.message);
+          continue;
+        }
+      }
+      
+      throw new Error('All Hugging Face reply models failed');
       
     } catch (error) {
       console.error('💥 Hugging Face reply error:', error);
@@ -220,8 +252,55 @@ Concise, natural response:`;
     }
   }
 
-  // INTELLIGENT FALLBACK METHODS (These actually work!)
-  
+  // Convert Hugging Face summary to our format
+  convertHFSummaryToOurFormat(hfSummary) {
+    console.log('🔄 Converting HF summary to our format');
+    
+    if (!hfSummary || hfSummary.trim().length === 0) {
+      return {
+        keyPoints: ["AI-generated summary"],
+        quotes: ["Key insights from content"],
+        sentiment: "neutral",
+        wordCount: 0,
+        timeToRead: 1
+      };
+    }
+    
+    const text = hfSummary.trim();
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
+    
+    const keyPoints = [];
+    const quotes = [];
+    
+    // Extract key points and quotes from sentences
+    for (let i = 0; i < Math.min(3, sentences.length); i++) {
+      const sentence = sentences[i].trim();
+      if (i < 2) {
+        keyPoints.push(sentence.substring(0, 100) + (sentence.length > 100 ? '...' : ''));
+      } else if (quotes.length < 2) {
+        quotes.push(sentence.substring(0, 80) + (sentence.length > 80 ? '...' : ''));
+      }
+    }
+    
+    // Fill in if needed
+    if (keyPoints.length === 0) {
+      keyPoints.push("Main discussion points from the thread");
+    }
+    
+    if (quotes.length === 0 && sentences.length > 0) {
+      quotes.push(sentences[0].substring(0, 80) + '...');
+    }
+    
+    return {
+      keyPoints: keyPoints.length > 0 ? keyPoints.slice(0, 3) : ["Main discussion points"],
+      quotes: quotes.length > 0 ? quotes.slice(0, 2) : ["Key statement from thread"],
+      sentiment: "neutral",
+      wordCount: text.length,
+      timeToRead: Math.ceil(text.length / 200)
+    };
+  }
+
+  // Intelligent fallback methods (when all APIs fail)
   generateIntelligentSummary(threadContent) {
     console.log('🧠 Generating intelligent summary from content...');
     const text = threadContent.text || '';
@@ -236,57 +315,78 @@ Concise, natural response:`;
       };
     }
 
-    // Split into sentences/lines
+    // Split into lines and clean
     const lines = text.split('\n')
-      .filter(line => line.trim().length > 15)
+      .filter(line => line.trim().length > 10)
       .map(line => line.trim())
-      .slice(0, 20); // Limit to first 20 lines
+      .slice(0, 30); // Limit for performance
 
     const keyPoints = [];
     const quotes = [];
 
     // Intelligent extraction
     if (lines.length > 0) {
-      // Extract meaningful sentences (likely key points)
+      // Extract meaningful content (likely key points)
       const meaningfulLines = lines.filter(line => 
         line.length > 30 && 
         line.split(' ').length > 5 &&
         !line.includes('http') &&
-        !line.includes('@') &&
-        !line.includes('#')
-      ).slice(0, 5);
+        !line.includes('RT @') &&
+        !line.startsWith('Replying to') &&
+        line.length < 280
+      );
 
-      // Generate key points from meaningful content
+      // Generate key points
       for (let i = 0; i < Math.min(3, meaningfulLines.length); i++) {
         const line = meaningfulLines[i];
-        keyPoints.push(this.cleanAndLimit(line, 100));
+        const cleanLine = line
+          .replace(/@\w+/g, '')
+          .replace(/#\w+/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        
+        if (cleanLine.length > 15) {
+          keyPoints.push(cleanLine.substring(0, 100) + (cleanLine.length > 100 ? '...' : ''));
+        }
       }
 
-      // Extract potential quotes (shorter, impactful statements)
+      // Extract potential quotes
       const potentialQuotes = lines.filter(line => 
         line.length > 20 && 
         line.length < 120 &&
         (line.includes('"') || line.includes('“') || line.length < 80)
-      ).slice(0, 3);
+      );
 
       for (let i = 0; i < Math.min(2, potentialQuotes.length); i++) {
-        const quote = potentialQuotes[i].replace(/[""]/g, '').trim();
-        quotes.push(this.cleanAndLimit(quote, 80));
+        const quote = potentialQuotes[i]
+          .replace(/[""]/g, '')
+          .replace(/@\w+/g, '')
+          .trim();
+        quotes.push(quote.substring(0, 80) + (quote.length > 80 ? '...' : ''));
       }
 
       // Fill in if needed
-      if (keyPoints.length === 0) {
-        keyPoints.push(this.cleanAndLimit(lines[0] || "Thread content analysis", 100));
+      if (keyPoints.length === 0 && lines.length > 0) {
+        const firstLine = lines[0]
+          .replace(/@\w+/g, '')
+          .replace(/#\w+/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        keyPoints.push(firstLine.substring(0, 100) + (firstLine.length > 100 ? '...' : ''));
       }
 
       if (quotes.length === 0 && lines.length > 1) {
-        quotes.push(this.cleanAndLimit(lines[1] || "Key insights from discussion", 80));
+        const middleLine = lines[Math.floor(lines.length / 2)]
+          .replace(/[""]/g, '')
+          .replace(/@\w+/g, '')
+          .trim();
+        quotes.push(middleLine.substring(0, 80) + (middleLine.length > 80 ? '...' : ''));
       }
     }
 
     return {
-      keyPoints: keyPoints.length > 0 ? keyPoints.slice(0, 3) : ["Main discussion points"],
-      quotes: quotes.length > 0 ? quotes.slice(0, 2) : ["Key statement from thread"],
+      keyPoints: keyPoints.length > 0 ? keyPoints.slice(0, 3) : ["Main discussion points from thread"],
+      quotes: quotes.length > 0 ? quotes.slice(0, 2) : ["Key statement from discussion"],
       sentiment: "neutral",
       wordCount: text.length,
       timeToRead: Math.ceil(text.length / 200)
@@ -310,25 +410,39 @@ Concise, natural response:`;
       const firstLine = lines[0];
       
       // Generate context-aware replies
-      const contextKeywords = ['thanks', 'great', 'interesting', 'helpful', 'insight', 'learn'];
-      const hasPositiveContext = contextKeywords.some(keyword => 
+      const positiveKeywords = ['thanks', 'great', 'amazing', 'awesome', 'love', 'excellent', 'fantastic'];
+      const questionKeywords = ['?', 'how', 'what', 'why', 'when', 'where', 'can you'];
+      const hasPositiveContext = positiveKeywords.some(keyword => 
+        firstLine.toLowerCase().includes(keyword)
+      );
+      const hasQuestion = questionKeywords.some(keyword => 
         firstLine.toLowerCase().includes(keyword)
       );
 
       if (hasPositiveContext) {
         const positiveReplies = [
-          "Great insights! Thanks for sharing these thoughts.",
-          "This is really helpful information. Appreciate the breakdown.",
-          "Interesting perspective. Learned something new today!",
-          "Thanks for the detailed explanation. Very informative."
+          "Great insights shared here! Thanks for breaking this down.",
+          "This is really helpful information. Appreciate the detailed explanation.",
+          "Interesting perspective on this topic. Learned something new today!",
+          "Thanks for sharing these thoughts. Very informative thread.",
+          "This adds a lot of value to the conversation. Well articulated!"
         ];
         return positiveReplies[Math.floor(Math.random() * positiveReplies.length)];
+      } else if (hasQuestion) {
+        const questionReplies = [
+          "Good question! Here's my take on this...",
+          "That's an interesting point. From my experience...",
+          "I've been thinking about this too. Here's what I found...",
+          "Thanks for raising this question. My perspective is..."
+        ];
+        return questionReplies[Math.floor(Math.random() * questionReplies.length)];
       } else {
         const neutralReplies = [
           "Thanks for sharing these insights!",
-          "This adds value to the conversation.",
-          "Well articulated points here.",
-          "Good to know your perspective on this."
+          "This is really helpful information.",
+          "Interesting perspective, learned something new!",
+          "Appreciate the detailed explanation.",
+          "This adds value to the conversation."
         ];
         return neutralReplies[Math.floor(Math.random() * neutralReplies.length)];
       }
@@ -337,85 +451,13 @@ Concise, natural response:`;
     // Default replies
     const defaultReplies = [
       "Great insights shared here!",
-      "Thanks for breaking this down.",
       "This is really helpful information.",
       "Interesting perspective on this topic.",
-      "Learned something new today!"
+      "Thanks for sharing these thoughts.",
+      "This adds value to the conversation."
     ];
     
     return defaultReplies[Math.floor(Math.random() * defaultReplies.length)];
-  }
-
-  // Helper methods
-  parseIntelligentHFResponse(hfResponse) {
-    console.log('🧠 Parsing intelligent HF response');
-    const text = hfResponse.trim();
-    
-    if (text.length === 0) {
-      return {
-        keyPoints: ["AI-generated summary"],
-        quotes: ["Key insights from content"],
-        sentiment: "neutral",
-        wordCount: 0,
-        timeToRead: 1
-      };
-    }
-
-    // Simple but effective parsing
-    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 15);
-    
-    const keyPoints = [];
-    const quotes = [];
-    
-    // Extract key points and quotes
-    for (let i = 0; i < Math.min(3, sentences.length); i++) {
-      const sentence = sentences[i].trim();
-      if (i < 2) {
-        keyPoints.push(this.cleanAndLimit(sentence, 100));
-      } else if (quotes.length < 2) {
-        quotes.push(this.cleanAndLimit(sentence, 80));
-      }
-    }
-    
-    // Fill in if needed
-    if (keyPoints.length === 0) {
-      keyPoints.push("Main discussion points from content");
-    }
-    
-    if (quotes.length === 0) {
-      quotes.push("Key statement from the discussion");
-    }
-    
-    return {
-      keyPoints: keyPoints.slice(0, 3),
-      quotes: quotes.slice(0, 2),
-      sentiment: "neutral",
-      wordCount: text.length,
-      timeToRead: Math.ceil(text.length / 200)
-    };
-  }
-
-  extractCleanReply(replyText) {
-    const text = replyText.trim();
-    if (text.length === 0) return "Thanks for sharing!";
-    
-    // Extract first sentence or clean line
-    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
-    if (sentences.length > 0) {
-      return this.cleanAndLimit(sentences[0].trim() + '.', 120);
-    }
-    
-    // Fallback to first line
-    const lines = text.split('\n').filter(l => l.trim().length > 10);
-    if (lines.length > 0) {
-      return this.cleanAndLimit(lines[0].trim(), 120);
-    }
-    
-    return "Thanks for sharing this insight!";
-  }
-
-  cleanAndLimit(text, maxLength) {
-    return text.substring(0, maxLength).trim() + (text.length > maxLength ? '...' : '');
   }
 
   // Utility methods
